@@ -1,0 +1,7 @@
+streamlit==1.35.0
+langchain==0.1.14
+chromadb==0.4.24
+pypdf==4.2.0
+python-docx==0.8.11
+tiktoken==0.6.0
+pyinstaller==6.5.0
