@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.chroma/
+.streamlit/secrets.toml
+*.db
+*.log
+dist/
+build/
+*.spec
