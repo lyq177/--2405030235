@@ -1,100 +1,109 @@
-import os
 import streamlit as st
-from knowledge_base import KnowledgeBase
-from rag_chain import RAGChain
+import os
 import tempfile
+from knowledge_base import KnowledgeBase
+from rag_chain import RAGChatbot
 
-st.set_page_config(page_title="RAG智能问答系统", layout="wide")
+st.set_page_config(page_title="RAG智能问答系统", page_icon="📚", layout="wide")
 
-if "kb" not in st.session_state:
+if 'chatbot' not in st.session_state:
+    st.session_state.chatbot = None
+
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+
+if 'kb' not in st.session_state:
     st.session_state.kb = KnowledgeBase()
-    st.session_state.kb.load_vector_db()
 
-if "rag_chain" not in st.session_state:
-    st.session_state.rag_chain = None
+def init_chatbot():
+    st.session_state.chatbot = RAGChatbot()
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+def build_knowledge_base(documents):
+    kb = st.session_state.kb
+    kb.build_vector_store(documents)
+    init_chatbot()
 
-if "document_count" not in st.session_state:
-    st.session_state.document_count = st.session_state.kb.get_document_count()
-
-def init_rag_chain():
-    if st.session_state.kb.vectorstore is not None:
-        st.session_state.rag_chain = RAGChain(st.session_state.kb.vectorstore)
-
-if st.session_state.kb.vectorstore is not None and st.session_state.rag_chain is None:
-    init_rag_chain()
-
-st.title("🔍 RAG智能问答系统")
+st.title("📚 基于本地知识库的RAG智能问答系统")
 
 with st.sidebar:
-    st.subheader("知识库管理")
+    st.header("知识库管理")
     
-    uploaded_files = st.file_uploader("上传PDF或DOCX文件", type=["pdf", "docx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "上传文档",
+        type=["pdf", "docx", "doc"],
+        accept_multiple_files=True
+    )
     
     if st.button("构建/更新知识库"):
         if uploaded_files:
-            with tempfile.TemporaryDirectory() as temp_dir:
+            with st.spinner("正在处理文档..."):
+                documents = []
                 for uploaded_file in uploaded_files:
-                    file_path = os.path.join(temp_dir, uploaded_file.name)
-                    with open(file_path, "wb") as f:
-                        f.write(uploaded_file.getvalue())
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as temp_file:
+                        temp_file.write(uploaded_file.getvalue())
+                        temp_file_path = temp_file.name
+                    
+                    try:
+                        if uploaded_file.name.endswith(".pdf"):
+                            from langchain_community.document_loaders import PyPDFLoader
+                            loader = PyPDFLoader(temp_file_path)
+                            docs = loader.load()
+                        elif uploaded_file.name.endswith((".docx", ".doc")):
+                            from langchain_community.document_loaders import Docx2txtLoader
+                            loader = Docx2txtLoader(temp_file_path)
+                            docs = loader.load()
+                        
+                        for doc in docs:
+                            doc.metadata["source"] = uploaded_file.name
+                        documents.extend(docs)
+                    finally:
+                        os.unlink(temp_file_path)
                 
-                documents = st.session_state.kb.load_documents(temp_dir)
-                if documents:
-                    st.session_state.kb.clear_db()
-                    chunk_count = st.session_state.kb.build_vector_db(documents)
-                    st.session_state.document_count = chunk_count
-                    init_rag_chain()
-                    st.success(f"知识库更新成功！共 {chunk_count} 个文本块")
-                else:
-                    st.error("未找到有效文档")
+                build_knowledge_base(documents)
+                st.success(f"知识库构建成功！共处理 {len(documents)} 个文档")
         else:
             st.warning("请先上传文档")
     
-    if st.button("清空知识库"):
-        st.session_state.kb.clear_db()
-        st.session_state.rag_chain = None
-        st.session_state.document_count = 0
-        st.session_state.chat_history = []
-        st.success("知识库已清空")
+    stats = st.session_state.kb.get_stats()
+    st.info(f"当前知识库状态：\n- 文本块数量：{stats['chunks']}")
     
-    st.subheader("知识库状态")
-    st.write(f"文本块数量: {st.session_state.document_count}")
+    if st.button("清空对话历史"):
+        st.session_state.messages = []
+        if st.session_state.chatbot:
+            st.session_state.chatbot.clear_history()
+        st.success("对话历史已清空")
 
-st.subheader("问答交互")
-user_input = st.text_input("请输入您的问题:", key="input")
+st.header("问答交互")
 
-if st.button("提问"):
-    if user_input.strip():
-        if st.session_state.rag_chain is None:
-            st.warning("请先上传文档并构建知识库")
-        else:
-            with st.spinner("正在思考..."):
-                answer, sources = st.session_state.rag_chain.ask(user_input)
-                
-                st.session_state.chat_history.append({
-                    "question": user_input,
-                    "answer": answer,
-                    "sources": sources
-                })
-                
-                st.success("回答完成！")
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message.get("sources"):
+            with st.expander("参考来源"):
+                for source in message["sources"]:
+                    st.write(f"- {source['source']} (第{source['page']}页)")
 
-if st.session_state.chat_history:
-    st.subheader("对话历史")
-    for i, chat in enumerate(reversed(st.session_state.chat_history), 1):
-        with st.expander(f"问题 {len(st.session_state.chat_history) - i + 1}: {chat['question']}"):
-            st.write(f"**回答:** {chat['answer']}")
-            if chat['sources']:
-                st.write("**参考来源:**")
-                for j, source in enumerate(chat['sources'], 1):
-                    src = source.metadata.get("source", "未知来源")
-                    st.write(f"  {j}. {os.path.basename(src)}")
-
-if st.button("清空对话历史"):
-    st.session_state.chat_history = []
-    if st.session_state.rag_chain:
-        st.session_state.rag_chain.clear_memory()
-    st.success("对话历史已清空")
+if prompt := st.chat_input("请输入您的问题"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    with st.chat_message("assistant"):
+        with st.spinner("正在思考..."):
+            if not st.session_state.chatbot:
+                init_chatbot()
+            
+            result = st.session_state.chatbot.answer(prompt)
+            st.markdown(result["answer"])
+            
+            if result.get("sources"):
+                with st.expander("参考来源"):
+                    for source in result["sources"]:
+                        st.write(f"- {source['source']} (第{source['page']}页)")
+    
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result["answer"],
+        "sources": result.get("sources", [])
+    })
